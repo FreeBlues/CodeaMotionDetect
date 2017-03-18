@@ -1,0 +1,358 @@
+-- MotionDetect V1.00 20170318 Baseline
+-- GrabMotion
+-- 写成库的形式
+
+function setup()
+    mo = Motion
+    -- 初始化，分配图像，设置初始参数值
+    mo.init()
+end
+
+function draw()
+
+    background(40, 40, 50)
+    
+    -- 启动检测 starting detect
+    mo.detect()
+    
+    -- 根据检测结果为有动作变化的位置加矩形框 add rect on the motion area
+    mo.addRect()
+end
+
+
+-- 实时动作检测库
+Motion = {}
+
+local mo = Motion
+
+function Motion.init()
+    displayMode(OVERLAY)
+    spriteMode(CORNER)
+    memory = 0
+    -- 用来调节判读颜色差值 adjust the sub of two colors 
+    parameter.number("deltaColor",0,0.5,0.2)
+    -- parameter.number("dScaler",2,20,10)
+    parameter.watch("memory")
+    parameter.watch("1/DeltaTime")
+    parameter.watch("ElapsedTime")
+    parameter.watch("os.clock()")
+
+    -- parameter.watch("period1")
+    cameraSource(CAMERA_FRONT)
+    -- cameraSource(CAMERA_BACK)
+
+    img = image(CAMERA)
+    print(img)
+    
+    -- 设置矩形框判断处理中的一些参数 set some parameter in the rect function
+    scaler = 10
+    threshold = 20
+    
+    -- 用于保存动作区域坐标 keep the coordinate of the motion area
+    cdx,cdy = {},{}
+    
+    -- 创建 mesh，准备使用 GPU create mesh, prepare using GPU to do the detect job
+    m = mesh()
+    mp = mesh()
+    ma = mesh()
+    
+    tex = image(WIDTH,HEIGHT)
+    period1 = ElapsedTime
+    -- period1 = os.clock()
+    
+    -- 下一帧到当前帧的时间间隔
+    delayNextFrame = 10/60
+    
+    -- 下一帧比当前帧延迟 delayNextFrame
+    period2 = period1 + delayNextFrame
+    
+    img0 = image(WIDTH/1,HEIGHT/1)
+    img1 = image(WIDTH/1,HEIGHT/1)
+    img2 = image(WIDTH/1,HEIGHT/1)
+    img3 = image(WIDTH/1,HEIGHT/1)
+    img4 = image(WIDTH/scaler,HEIGHT/scaler)
+    
+    local w,h = img1.width, img1.height
+
+    -- 用于检测动作 detect motion
+    m:addRect(WIDTH/2,HEIGHT/2,WIDTH/1,HEIGHT/1)
+    m.shader = shader(myShader.vs,myShader.fs)
+    -- m.texture = img1
+    m.shader.tex0 = img0
+    m.shader.tex1 = img1
+    m.shader.tex2 = img2
+    
+    -- 用于为动作位置增加矩形框 add rect to show where it action
+    ma:addRect(WIDTH/2,HEIGHT/2,WIDTH/1,HEIGHT/1)
+    ma.shader = shader(myShader.vs,myShader.fs1)
+    ma.shader.resolution = vec2(WIDTH,HEIGHT)
+    ma.shader.tex0 = img3
+    
+    -- 用于其他处理
+    mp:addRect(WIDTH/2+200,HEIGHT/2,WIDTH/3,HEIGHT/3)
+    mp.texture = img2   
+end
+
+function Motion:detect()
+    pushStyle()
+    spriteMode(CORNER)
+    
+    -- 计算实时内存状态
+    memory = string.format("%.3f Mb",collectgarbage("count")/1024)
+    
+    -- 动态设置颜色阈值
+    m.shader.deltaColor = deltaColor
+        
+    -- 视频流全速率绘制到 img0
+    setContext(img0)
+    sprite(CAMERA,0,0,WIDTH,HEIGHT)
+    setContext()
+    
+    -- 每一轮 draw 的当前时间和 DeltaTime
+    -- currentT = os.clock()
+    currentT = ElapsedTime
+    
+    -- 每个 draw 中的取样频率，也可跨越单个 draw 周期，比如 2 秒
+    local dTPerDraw = DeltaTime
+    
+    -- 当前选择帧，作为对比基准帧，注意：本帧每隔 dTPerDraw 重新从视频流中取样获得
+    if currentT - period1 > dTPerDraw  then
+        period1 = currentT
+        setContext(img1)
+        -- sprite(CAMERA,WIDTH/2,HEIGHT/2,WIDTH,HEIGHT)
+        sprite(CAMERA,0,0,WIDTH,HEIGHT)
+        -- print("p1: ",period1)
+        setContext()
+    end
+    
+    -- 用于跟当前选择帧做对比的下一帧
+    if currentT - period2  > dTPerDraw  then
+        period2 = currentT + delayNextFrame
+        setContext(img2)
+        -- sprite(CAMERA,WIDTH/2,HEIGHT/2,WIDTH,HEIGHT)
+        sprite(CAMERA,0,0,WIDTH,HEIGHT)
+        -- print("p2: ",period2)
+        setContext()
+        -- cdx,cdy = {},{}
+    end
+    
+    -- 通过执行 m:draw 来让 shader 处理前后帧对比，并把处理结果绘制到 img3 
+    setContext(img3)
+    m:draw()
+    setContext()
+    
+    -- 绘制带有动作检测标示色的原图 img3
+    sprite(img3,0,0,WIDTH,HEIGHT)
+    
+    -- 绘制原始视频流
+    sprite(CAMERA,0,0,WIDTH,HEIGHT)
+    popStyle()
+end
+
+function Motion:addRect()
+    --[[ 也可以使用 ma 中的 shader 对动作位置画框，算法还不成熟，暂时注释
+    ma.shader.tex0 = img3
+    ma:draw()
+    --]]
+    
+    -- 以下在 Codea 中用 CPU 为动作位置画框
+    -- 在缓冲区 img4 中把原图缩小(为节省计算)，检查有变动的部分
+    local sw,sh = WIDTH/scaler,HEIGHT/scaler
+    setContext(img4)
+    pushMatrix()
+    sprite(img3,0,0,sw,sh)
+    popMatrix()
+    setContext()
+    
+    -- 在右上角显示缩小的图
+    sprite(img4,WIDTH-sw-5,HEIGHT-sh-5,sw,sh)
+    
+    ---[[ 在缩小的图中检查是否有动作标示色，若有则语音提示，同时画矩形框
+    local w,h = img4.width,img4.height
+    local k= 0
+    -- 为节省计算，可调节步长
+    local sx,sy = 2,2
+    for x= 1,w,sx do
+        for y = 1,h,sy do
+            local r,g,b,a =img4:get(x,y)
+            if (r==255 and g == 255 and b == 0) then               
+                k = k + 1
+                if k > threshold then
+                    table.insert(cdx,x)
+                    table.insert(cdy,y)
+                    -- print(cdx[1])
+                    speech.say("act")
+                    -- speech.say("你")
+                    -- sound("Game Sounds One:Blaster")
+                    speech.stop()
+                    k=0
+                end
+            end
+        end
+    end
+       
+    -- 对表排序，取出 cdx,cdy 表中第一项和最后一项，分别代表最左，最右，最下，最上
+    if #cdx ~= 0 and #cdy ~= 0 then    
+        pushStyle()
+        -- print("#cdx,cdx[1]: ",#cdx,cdx[1])
+        -- print("#cdy,cdy[1]: ",#cdy,cdy[1])
+        -- local cx,cy = 
+        table.sort(cdx)
+        table.sort(cdy)
+        -- print(cx,#cx)
+        -- 构造左下角，右上角的坐标
+        local lb,rt= vec2(cdx[1],cdy[1]),vec2(cdx[#cdx],cdy[#cdy])
+        -- 复原为大图
+        lb,rt=lb*scaler,rt*scaler
+        -- print(lb,rt)
+        -- fill(10, 255, 0, 255)
+        noFill()
+        stroke(0, 221, 255, 255)
+        strokeWidth(5)
+        -- rectMode(CENTER)
+        -- 计算矩形的左下角坐标以及宽高
+        local x,y,w,h = lb.x,lb.y,rt.x-lb.x,rt.y-lb.y
+        rect(x,y,w,h)
+        sprite("Tyrian Remastered:Flame 1",x,y,w,h)
+        -- 已完成当前矩形框绘制，把 cdx,cdy 表中坐标清空
+        cdx,cdy = {},{}
+        popStyle()
+    end
+    --]]
+end
+
+myShader = {
+vs =[[
+uniform mat4 modelViewProjection;
+
+//This is the current mesh vertex position, color and tex coord
+// Set automatically
+attribute vec4 position;
+attribute vec4 color;
+attribute vec2 texCoord;
+
+//This is an output variable that will be passed to the fragment shader
+varying lowp vec4 vColor;
+varying highp vec2 vTexCoord;
+
+void main()
+{
+gl_Position = modelViewProjection * position;
+
+vColor = color;
+vTexCoord = texCoord;
+}
+]],
+
+-- 用于对比前后帧变化的 shader
+fs =[[
+uniform highp sampler2D tex0;
+uniform highp sampler2D tex1;
+uniform highp sampler2D tex2;
+
+uniform highp float deltaColor;
+
+//The interpolated vertex color for this fragment
+varying lowp vec4 vColor;
+
+//The interpolated texture coordinate for this fragment
+varying highp vec2 vTexCoord;
+
+uniform highp float time;
+
+highp float grey(lowp vec4 col)
+{
+highp float grey = 0.2126*col.r + 0.7152* col.g + 0.0722*col.b;
+return grey;
+}
+
+void main()
+{
+highp vec2 uv = vTexCoord;
+
+highp vec4 col,col0,col1,col2;
+
+col0 = texture2D(tex0,uv);
+col1 = texture2D(tex1,uv);
+col2 = texture2D(tex2,uv);
+
+// 计算前后帧相同坐标处颜色的差值，判断其是否有变化
+highp vec4 dCol;
+highp float g;
+
+dCol = abs(col1-col2);
+
+g = grey(dCol);
+
+if (g <= deltaColor) { col = col0;
+    // 设为黑色，直接输出二值图像
+    //col = vec4(0.,0.,0.,1.);
+} else {
+    col = vec4(1.,1.,0.0,1.);
+}
+
+gl_FragColor = col;
+}
+]],
+
+-- 用于在动作位置画框的 shader
+fs1 =[[
+
+varying highp vec2 vTexCoord;
+
+highp vec4 col,col0,col1,col2;
+
+uniform highp sampler2D tex0;
+uniform highp sampler2D tex1;
+uniform highp vec2 resolution;
+
+void main() {
+highp vec2 uv = vTexCoord;
+
+col0 = texture2D(tex0,uv);
+
+    // 新坐标
+    highp vec2 dl,dr,db,dt;
+
+
+if (col0.r ==1. && col0.g == 1. && col0.b == 0.) {
+    highp vec2 step;
+    step = uv.xy/resolution.xy;
+    // 
+    bool p =true;
+    highp float k = 1.;
+
+    while (p && k <200.) {
+    //if (k < 2000.) {
+
+    dl = uv-vec2(step.x,0.)*k;
+    dr = uv+vec2(step.x,0.)*k;
+    db = uv-vec2(0.,step.y)*k;
+    dt = uv+vec2(0.,step.y)*k;
+    
+    highp vec4 l,r,b,t;
+    l = texture2D(tex0,dl);
+    r = texture2D(tex0,dr);
+    b = texture2D(tex0,db);
+    t = texture2D(tex0,dt);
+    
+    if ((l.r == 1. && l.g ==1.) || (r.r == 1. && r.g ==1.) || (b.r == 1. && b.g ==1.) || (t.r == 1. && t.g ==1.)){
+        // 扩大坐标范围
+        k = k+10.;
+    } else {k = 1.; p = false;}
+
+    }
+    
+} else {col = col0;}
+
+    // 绘制框
+    highp float d=10.;
+    if ((uv.x>=dl.x && uv.x <= dr.x) && (uv.y>=db.y && uv.y <= dt.y)) {col = vec4(1.,0.,0.,1.);}
+    if ((uv.x>=dl.x+d && uv.x <= dr.x-d) && (uv.y>=db.y+d && uv.y <= dt.y-d)) {col = col0;}
+
+gl_FragColor = col;
+}
+
+]]
+}
+
