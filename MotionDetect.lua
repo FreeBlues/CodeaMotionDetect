@@ -1,4 +1,5 @@
--- MotionDetect V1.00 20170318 Baseline
+
+-- MotionDetect V1.01 20170319 新增一种计算矩形框坐标的实验算法：更灵敏，资源耗费大
 -- GrabMotion
 -- 写成库的形式
 
@@ -9,7 +10,7 @@ function setup()
 end
 
 function draw()
-
+    
     background(40, 40, 50)
     
     -- 启动检测 starting detect
@@ -29,24 +30,24 @@ function Motion.init()
     displayMode(OVERLAY)
     spriteMode(CORNER)
     memory = 0
-    -- 用来调节判读颜色差值 adjust the sub of two colors 
+    -- 用来调节判读颜色差值 adjust the sub of two colors
     parameter.number("deltaColor",0,0.5,0.2)
     -- parameter.number("dScaler",2,20,10)
     parameter.watch("memory")
     parameter.watch("1/DeltaTime")
     parameter.watch("ElapsedTime")
     parameter.watch("os.clock()")
-
+    
     -- parameter.watch("period1")
     cameraSource(CAMERA_FRONT)
     -- cameraSource(CAMERA_BACK)
-
+    
     img = image(CAMERA)
     print(img)
     
     -- 设置矩形框判断处理中的一些参数 set some parameter in the rect function
     scaler = 10
-    threshold = 20
+    threshold = 10
     
     -- 用于保存动作区域坐标 keep the coordinate of the motion area
     cdx,cdy = {},{}
@@ -73,7 +74,7 @@ function Motion.init()
     img4 = image(WIDTH/scaler,HEIGHT/scaler)
     
     local w,h = img1.width, img1.height
-
+    
     -- 用于检测动作 detect motion
     m:addRect(WIDTH/2,HEIGHT/2,WIDTH/1,HEIGHT/1)
     m.shader = shader(myShader.vs,myShader.fs)
@@ -90,7 +91,7 @@ function Motion.init()
     
     -- 用于其他处理
     mp:addRect(WIDTH/2+200,HEIGHT/2,WIDTH/3,HEIGHT/3)
-    mp.texture = img2   
+    mp.texture = img2
 end
 
 function Motion:detect()
@@ -102,7 +103,7 @@ function Motion:detect()
     
     -- 动态设置颜色阈值
     m.shader.deltaColor = deltaColor
-        
+    
     -- 视频流全速率绘制到 img0
     setContext(img0)
     sprite(CAMERA,0,0,WIDTH,HEIGHT)
@@ -136,7 +137,7 @@ function Motion:detect()
         -- cdx,cdy = {},{}
     end
     
-    -- 通过执行 m:draw 来让 shader 处理前后帧对比，并把处理结果绘制到 img3 
+    -- 通过执行 m:draw 来让 shader 处理前后帧对比，并把处理结果绘制到 img3
     setContext(img3)
     m:draw()
     setContext()
@@ -174,29 +175,52 @@ function Motion:addRect()
     local sx,sy = 2,2
     for x= 1,w,sx do
         for y = 1,h,sy do
+            -- 取得当前像素点的颜色
             local r,g,b,a =img4:get(x,y)
-            if (r==255 and g == 255 and b == 0) then               
+            ---[[ 扫描图像中所有像素
+            if (r==255 and g == 255 and b == 0) then
                 k = k + 1
                 if k > threshold then
                     table.insert(cdx,x)
                     table.insert(cdy,y)
-                    -- print(cdx[1])
                     speech.say("act")
-                    -- speech.say("你")
-                    -- sound("Game Sounds One:Blaster")
                     speech.stop()
                     k=0
                 end
             end
+            --]]
+            --[=[ 另一种判断思路，向右，向上递增坐标
+            if (r==255 and g == 255 and b == 0) then
+                table.insert(cdx,x)
+                table.insert(cdy,y)
+                k = 0
+                p=true
+                while (p and k<threshold and x+k<w and y+k<h) do
+                    local rr,rg,rb,ra =img4:get(x+k,y)
+                    local tr,tg,tb,ta =img4:get(x,y+k)
+                    if ((rr==255 and rg == 255) or (tr==255 and tg == 255)) then 
+                        speech.say("act")
+                        speech.stop()
+                        k=k+10
+                    else 
+                        table.insert(cdx,x+k)
+                        table.insert(cdy,y+k)
+                        k=1; p=false 
+                        break
+                    end
+                end
+            end
+            --]=]
         end
     end
-       
+    
     -- 对表排序，取出 cdx,cdy 表中第一项和最后一项，分别代表最左，最右，最下，最上
-    if #cdx ~= 0 and #cdy ~= 0 then    
+    if #cdx ~= 0 and #cdy ~= 0 then
         pushStyle()
         -- print("#cdx,cdx[1]: ",#cdx,cdx[1])
         -- print("#cdy,cdy[1]: ",#cdy,cdy[1])
-        -- local cx,cy = 
+        -- local cx,cy =
+        print(#cdx)
         table.sort(cdx)
         table.sort(cdy)
         -- print(cx,#cx)
@@ -285,10 +309,10 @@ dCol = abs(col1-col2);
 g = grey(dCol);
 
 if (g <= deltaColor) { col = col0;
-    // 设为黑色，直接输出二值图像
-    //col = vec4(0.,0.,0.,1.);
+// 设为黑色，直接输出二值图像
+//col = vec4(0.,0.,0.,1.);
 } else {
-    col = vec4(1.,1.,0.0,1.);
+col = vec4(1.,1.,0.0,1.);
 }
 
 gl_FragColor = col;
@@ -311,48 +335,55 @@ highp vec2 uv = vTexCoord;
 
 col0 = texture2D(tex0,uv);
 
-    // 新坐标
-    highp vec2 dl,dr,db,dt;
+// 新坐标
+highp vec2 dl,dr,db,dt;
 
 
 if (col0.r ==1. && col0.g == 1. && col0.b == 0.) {
-    highp vec2 step;
-    step = uv.xy/resolution.xy;
-    // 
-    bool p =true;
-    highp float k = 1.;
+// 相邻像素的距离
+highp vec2 step = vec2(1.,1.)/resolution.xy;
+// 判断条件
+bool p =true;
+highp float k = 1.;
 
-    while (p && k <200.) {
-    //if (k < 2000.) {
+//highp float minX,minY,maxX,maxY=uv.x,uv.y,uv.x,uv.y;
 
-    dl = uv-vec2(step.x,0.)*k;
-    dr = uv+vec2(step.x,0.)*k;
-    db = uv-vec2(0.,step.y)*k;
-    dt = uv+vec2(0.,step.y)*k;
-    
-    highp vec4 l,r,b,t;
-    l = texture2D(tex0,dl);
-    r = texture2D(tex0,dr);
-    b = texture2D(tex0,db);
-    t = texture2D(tex0,dt);
-    
-    if ((l.r == 1. && l.g ==1.) || (r.r == 1. && r.g ==1.) || (b.r == 1. && b.g ==1.) || (t.r == 1. && t.g ==1.)){
-        // 扩大坐标范围
-        k = k+10.;
-    } else {k = 1.; p = false;}
+while (p && k <1000.) {
+//if (k < 2000.) {
 
-    }
-    
+// 上下左右像素的坐标
+dl = uv-vec2(step.x,0.)*k;
+dr = uv+vec2(step.x,0.)*k;
+db = uv-vec2(0.,step.y)*k;
+dt = uv+vec2(0.,step.y)*k;
+
+// 在 uv 四周取样，左右上下像素的颜色
+highp vec4 l,r,b,t;
+l = texture2D(tex0,dl);
+r = texture2D(tex0,dr);
+b = texture2D(tex0,db);
+t = texture2D(tex0,dt);
+
+//minX,minY,maxX,maxY=min(dl.x,minX),min(db.y,miny),max(dr.x,maxX),max(dt.y,maxY);
+
+// 若任一点为标示色，则继续扩大一圈取样，若都不为标示色则退出循环，当前坐标即为矩形框坐标范围
+if ((l.r == 1. && l.g ==1.) || (r.r == 1. && r.g ==1.) || (b.r == 1. && b.g ==1.) || (t.r == 1. && t.g ==1.)){
+// 扩大坐标范围，继续搜索周围像素
+k = k+1.;
+
+} else {k = 1.; p = false;}
+
+}
+
 } else {col = col0;}
 
-    // 绘制框
-    highp float d=10.;
-    if ((uv.x>=dl.x && uv.x <= dr.x) && (uv.y>=db.y && uv.y <= dt.y)) {col = vec4(1.,0.,0.,1.);}
-    if ((uv.x>=dl.x+d && uv.x <= dr.x-d) && (uv.y>=db.y+d && uv.y <= dt.y-d)) {col = col0;}
+// 绘制框
+highp float d=10.;
+if ((uv.x>=dl.x && uv.x <= dr.x) && (uv.y>=db.y && uv.y <= dt.y)) {col = vec4(1.,0.,0.,1.);}
+if ((uv.x>=dl.x+d && uv.x <= dr.x-d) && (uv.y>=db.y+d && uv.y <= dt.y-d)) {col = col0;}
 
 gl_FragColor = col;
 }
 
 ]]
 }
-
