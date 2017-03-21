@@ -1,9 +1,10 @@
 
--- MotionDetect V1.01 20170319 新增一种计算矩形框坐标的实验算法：更灵敏，资源耗费大
+-- MotionDetect V1.02 20170321 增加部分实验代码, 用 CPU 计算矩形坐标, 用 shader 画矩形框
 -- GrabMotion
 -- 写成库的形式
 
 function setup()
+    
     mo = Motion
     -- 初始化，分配图像，设置初始参数值
     mo.init()
@@ -47,7 +48,7 @@ function Motion.init()
     
     -- 设置矩形框判断处理中的一些参数 set some parameter in the rect function
     scaler = 10
-    threshold = 10
+    threshold = 5
     
     -- 用于保存动作区域坐标 keep the coordinate of the motion area
     cdx,cdy = {},{}
@@ -72,6 +73,7 @@ function Motion.init()
     img2 = image(WIDTH/1,HEIGHT/1)
     img3 = image(WIDTH/1,HEIGHT/1)
     img4 = image(WIDTH/scaler,HEIGHT/scaler)
+    img5 = image(WIDTH/1,HEIGHT/1)
     
     local w,h = img1.width, img1.height
     
@@ -151,10 +153,7 @@ function Motion:detect()
 end
 
 function Motion:addRect()
-    --[[ 也可以使用 ma 中的 shader 对动作位置画框，算法还不成熟，暂时注释
-    ma.shader.tex0 = img3
-    ma:draw()
-    --]]
+
     
     -- 以下在 Codea 中用 CPU 为动作位置画框
     -- 在缓冲区 img4 中把原图缩小(为节省计算)，检查有变动的部分
@@ -164,6 +163,21 @@ function Motion:addRect()
     sprite(img3,0,0,sw,sh)
     popMatrix()
     setContext()
+    
+    --[[ 再放大: 配合第二种画框算法使用
+    setContext(img5)
+    pushMatrix()
+    sprite(img4,0,0,WIDTH,HEIGHT)
+    popMatrix()
+    setContext()
+    
+    -- 再缩小，可过滤掉一部分有变化但变化不大的区域
+    setContext(img4)
+    pushMatrix()
+    sprite(img5,0,0,sw,sh)
+    popMatrix()
+    setContext()
+    --]]
     
     -- 在右上角显示缩小的图
     sprite(img4,WIDTH-sw-5,HEIGHT-sh-5,sw,sh)
@@ -177,7 +191,7 @@ function Motion:addRect()
         for y = 1,h,sy do
             -- 取得当前像素点的颜色
             local r,g,b,a =img4:get(x,y)
-            ---[[ 扫描图像中所有像素
+            ---[==[ 扫描图像中所有像素
             if (r==255 and g == 255 and b == 0) then
                 k = k + 1
                 if k > threshold then
@@ -188,7 +202,7 @@ function Motion:addRect()
                     k=0
                 end
             end
-            --]]
+            --]==]
             --[=[ 另一种判断思路，向右，向上递增坐标
             if (r==255 and g == 255 and b == 0) then
                 table.insert(cdx,x)
@@ -199,8 +213,8 @@ function Motion:addRect()
                     local rr,rg,rb,ra =img4:get(x+k,y)
                     local tr,tg,tb,ta =img4:get(x,y+k)
                     if ((rr==255 and rg == 255) or (tr==255 and tg == 255)) then 
-                        speech.say("act")
-                        speech.stop()
+                        --speech.say("act")
+                        --speech.stop()
                         k=k+10
                     else 
                         table.insert(cdx,x+k)
@@ -236,13 +250,24 @@ function Motion:addRect()
         -- rectMode(CENTER)
         -- 计算矩形的左下角坐标以及宽高
         local x,y,w,h = lb.x,lb.y,rt.x-lb.x,rt.y-lb.y
+        ma.shader.lb, ma.shader.rt = lb/WIDTH,rt/HEIGHT
         rect(x,y,w,h)
+        
+        --[==[ 也可以使用 ma 中的 shader 对动作位置画框，算法还不成熟，暂时注释
+        ma.shader.tex0 = img3
+        ma.shader.tex1 = img0
+        ma:draw()
+        --]==]
+    
+        tint(255,255,255,180)
         sprite("Tyrian Remastered:Flame 1",x,y,w,h)
         -- 已完成当前矩形框绘制，把 cdx,cdy 表中坐标清空
         cdx,cdy = {},{}
         popStyle()
     end
     --]]
+    
+
 end
 
 myShader = {
@@ -330,15 +355,21 @@ uniform highp sampler2D tex0;
 uniform highp sampler2D tex1;
 uniform highp vec2 resolution;
 
+uniform highp vec2 lb;
+uniform highp vec2 rt;
+
 void main() {
 highp vec2 uv = vTexCoord;
 
+// 从带有动作标示色的图像中取样
 col0 = texture2D(tex0,uv);
+col1 = texture2D(tex1,uv);
 
+/*
 // 新坐标
 highp vec2 dl,dr,db,dt;
 
-
+// 若取样点为动作区域
 if (col0.r ==1. && col0.g == 1. && col0.b == 0.) {
 // 相邻像素的距离
 highp vec2 step = vec2(1.,1.)/resolution.xy;
@@ -378,11 +409,26 @@ k = k+1.;
 } else {col = col0;}
 
 // 绘制框
-highp float d=10.;
-if ((uv.x>=dl.x && uv.x <= dr.x) && (uv.y>=db.y && uv.y <= dt.y)) {col = vec4(1.,0.,0.,1.);}
-if ((uv.x>=dl.x+d && uv.x <= dr.x-d) && (uv.y>=db.y+d && uv.y <= dt.y-d)) {col = col0;}
+highp float d=.1;
 
-gl_FragColor = col;
+// 在 shader 中计算矩形框的坐标
+gl_FragColor = col1;
+//if ((uv.x>=dl.x && uv.x <= dr.x) && (uv.y>=db.y && uv.y <= dt.y)) {gl_FragColor = vec4(1.,0.,0.,1.);}
+//if ((uv.x>=dl.x+d && uv.x <= dr.x-d) && (uv.y>=db.y+d && uv.y <= dt.y-d)) {gl_FragColor = col0;}
+
+// 先绘制一个位置固定的矩形框
+//if ((uv.x>=.1 && uv.x <= .5) && (uv.y>=.4 && uv.y <= .8)) {col = vec4(1.,0.,0.,1.);}
+//if ((uv.x>=.1+d && uv.x <= .5-d) && (uv.y>=.4+d && uv.y <= .8-d)) {col = col0;}
+*/
+
+highp float d=.01;
+// 由 CPU 提供矩形框坐标
+gl_FragColor = col1;
+if ((uv.x>=lb.x && uv.x <= rt.x-lb.x) && (uv.y>=lb.y && uv.y <= rt.y-lb.y)) {gl_FragColor = vec4(1.,1.,0.,.6);}
+if ((uv.x>=lb.x+d && uv.x <= rt.x-lb.x-d) && (uv.y>=lb.y+d && uv.y <= rt.y-lb.y -d)) {gl_FragColor = col1;}
+
+
+//gl_FragColor = col;
 }
 
 ]]
